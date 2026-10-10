@@ -86,7 +86,7 @@ public class Localization {
                 localizations = new SparseArray<>(localization.size());
             }
             for (Map.Entry<String, String> entry : localization.entrySet()) {
-                localizations.put(entry.getKey().hashCode(), entry.getValue());
+                localizations.put(entry.getKey().hashCode(), Rebranding.rebrand(entry.getValue()));
             }
             return this;
         }
@@ -119,13 +119,13 @@ public class Localization {
                 result = new SparseArray<>(count);
                 for (int a = 0; a < count; a++) {
                     final int hash = data.readInt32(true);
-                    final String value = data.readString(true);
+                    final String value = Rebranding.rebrand(data.readString(true));
                     result.append(hash, value);
                 }
             } else {
                 for (int a = 0; a < count; a++) {
                     final int hash = data.readInt32(true);
-                    final String value = data.readString(true);
+                    final String value = Rebranding.rebrand(data.readString(true));
                     result.put(hash, value);
                 }
             }
