@@ -5,6 +5,7 @@ import java.util.regex.Pattern;
 public final class Rebranding {
 
     private static final Pattern RULE_TELEGRAM_WEB = Pattern.compile("Telegram Web(?:\\s?K)?");
+    private static final Pattern RULE_TELEGRAM_TIPS_URL = Pattern.compile("https://t\\.me/TelegramTips[A-Za-z]*(/\\d+)?");
     private static final Pattern RULE_TELEGRAM = Pattern.compile("(?:(?<!\\w)|(?<=\\\\n))Telegram(?!\\w)");
 
     private Rebranding() {}
@@ -14,6 +15,7 @@ public final class Rebranding {
             return text;
         }
         text = RULE_TELEGRAM_WEB.matcher(text).replaceAll("Soneta");
+        text = RULE_TELEGRAM_TIPS_URL.matcher(text).replaceAll("https://t.me/thesoneta");
         text = RULE_TELEGRAM.matcher(text).replaceAll("Soneta");
         return text;
     }
