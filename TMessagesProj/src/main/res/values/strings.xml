@@ -1488,6 +1488,7 @@
     <string name="ChatYourSelf">forward here to save</string>
     <string name="SavedMessagesViewAsChatsHint">tap to view as chats ></string>
     <string name="SavedMessages">Saved Messages</string>
+    <string name="SonetaMiniApp">Soneta Mini App</string>
     <string name="SavedMessagesInfo">Forward here to save.</string>
     <string name="SavedMessagesInfoQuote">Quote here to save.</string>
     <string name="ChatYourSelfName">You</string>

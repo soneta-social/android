@@ -13727,6 +13727,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             args.putLong("user_id", UserConfig.getInstance(currentAccount).getClientUserId());
             presentFragment(new ChatActivity(args));
         });
+        io.add(R.drawable.msg_media, getString(R.string.SonetaMiniApp), () -> {
+            Browser.openUrl(getContext(), "https://t.me/frenscoin_bot/join");
+        });
         if (ApplicationLoader.applicationLoaderInstance != null) {
             ApplicationLoader.applicationLoaderInstance.addItemOptions(io);
         }
