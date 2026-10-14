@@ -13727,6 +13727,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             args.putBoolean("needPhonebook", true);
             presentFragment(new ContactsActivity(args));
         });
+        io.add(R.drawable.msg_calls, getString(R.string.MainTabsCalls), () -> {
+            presentFragment(new CallLogActivity(new Bundle()));
+        });
         io.add(R.drawable.outline_saved_24, getString(R.string.SavedMessages), () -> {
             Bundle args = new Bundle();
             args.putLong("user_id", UserConfig.getInstance(currentAccount).getClientUserId());
