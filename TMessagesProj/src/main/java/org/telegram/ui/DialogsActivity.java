@@ -13722,6 +13722,11 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             Bundle args = new Bundle();
             presentFragment(new GroupCreateActivity(args));
         });
+        io.add(R.drawable.msg_contact_add, getString(R.string.Contacts), () -> {
+            Bundle args = new Bundle();
+            args.putBoolean("needPhonebook", true);
+            presentFragment(new ContactsActivity(args));
+        });
         io.add(R.drawable.outline_saved_24, getString(R.string.SavedMessages), () -> {
             Bundle args = new Bundle();
             args.putLong("user_id", UserConfig.getInstance(currentAccount).getClientUserId());
@@ -13757,11 +13762,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                 }
             }
         }
-        if (getUserConfig().showCallsTab) {
-            io.add(R.drawable.msg_settings_old, getString(R.string.Settings), () -> {
-                presentFragment(new SettingsActivity());
-            });
-        }
+        io.add(R.drawable.msg_settings_old, getString(R.string.Settings), () -> {
+            presentFragment(new SettingsActivity());
+        });
 
         if (proxyMenuSubItem != null) {
             proxyMenuSubItem.subtextView.setTextColor(getThemedColor(Theme.key_groupcreate_sectionText));
