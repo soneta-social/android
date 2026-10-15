@@ -387,12 +387,64 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
             return;
         }
         final FeedPost post = (FeedPost) item.object;
+        if (view instanceof FeedPostCell && ((FeedPostCell) view).isTapOnComments(x, y)) {
+            openComments(post);
+            return;
+        }
         final int mediaIndex = view instanceof FeedPostCell ? ((FeedPostCell) view).getMediaIndexAt(x, y) : -1;
         if (mediaIndex >= 0 && mediaIndex < post.media.size()) {
             openPhotoViewer(post, mediaIndex);
             return;
         }
         openChat(post);
+    }
+
+    private void openComments(FeedPost post) {
+        final TLRPC.Message message = post.getMainMessage().messageOwner;
+        if (message.replies == null || message.replies.channel_id == 0 || message.replies.max_id == 0) {
+            openChat(post);
+            return;
+        }
+        final TLRPC.Chat chat = getMessagesController().getChat(-post.dialogId);
+        if (chat == null) {
+            openChat(post);
+            return;
+        }
+        final TLRPC.TL_messages_getDiscussionMessage req = new TLRPC.TL_messages_getDiscussionMessage();
+        req.peer = MessagesController.getInputPeer(chat);
+        req.msg_id = post.getMainMessage().getId();
+        final int reqId = getConnectionsManager().sendRequest(req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
+            if (getParentActivity() == null) {
+                return;
+            }
+            if (!(response instanceof TLRPC.TL_messages_discussionMessage)) {
+                openChat(post);
+                return;
+            }
+            final TLRPC.TL_messages_discussionMessage discussionMessage = (TLRPC.TL_messages_discussionMessage) response;
+            getMessagesController().putUsers(discussionMessage.users, false);
+            getMessagesController().putChats(discussionMessage.chats, false);
+            final ArrayList<MessageObject> thread = new ArrayList<>();
+            for (int i = 0; i < discussionMessage.messages.size(); i++) {
+                final TLRPC.Message m = discussionMessage.messages.get(i);
+                if (m instanceof TLRPC.TL_messageEmpty) {
+                    continue;
+                }
+                m.isThreadMessage = true;
+                thread.add(new MessageObject(currentAccount, m, true, true));
+            }
+            if (thread.isEmpty()) {
+                openChat(post);
+                return;
+            }
+            final Bundle args = new Bundle();
+            args.putLong("chat_id", -thread.get(0).getDialogId());
+            args.putInt("message_id", Math.max(1, discussionMessage.read_inbox_max_id));
+            final ChatActivity chatActivity = new ChatActivity(args);
+            chatActivity.setThreadMessages(thread, chat, req.msg_id, discussionMessage.read_inbox_max_id, discussionMessage.read_outbox_max_id, null);
+            presentFragment(chatActivity);
+        }));
+        getConnectionsManager().bindRequestToGuid(reqId, classGuid);
     }
 
     private void openPhotoViewer(FeedPost post, int index) {
@@ -473,6 +525,7 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
         TLRPC.Chat chat;
         final ArrayList<MessageObject> messages = new ArrayList<>();
         final ArrayList<MessageObject> media = new ArrayList<>();
+        CharSequence caption;
         int sortId;
 
         FeedPost(long dialogId, TLRPC.Chat chat, ArrayList<MessageObject> messages) {
@@ -487,10 +540,14 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
         // called after album messages were collected
         void rebuildDerived() {
             media.clear();
+            caption = null;
             int maxId = 0;
             for (int i = 0; i < messages.size(); i++) {
                 final MessageObject messageObject = messages.get(i);
                 maxId = Math.max(maxId, messageObject.getId());
+                if (TextUtils.isEmpty(caption) && !TextUtils.isEmpty(messageObject.caption)) {
+                    caption = messageObject.caption;
+                }
                 if (isMediaMessage(messageObject)) {
                     media.add(messageObject);
                 }
@@ -589,6 +646,8 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
         private final TextView messageTextView;
         private final FrameLayout mediaContainer;
         private final ArrayList<BackupImageView> mediaCells = new ArrayList<>();
+        private final ImageView commentsIconImageView;
+        private final TextView commentsTextView;
         private final ImageView viewsIconImageView;
         private final TextView viewsTextView;
         private final TextView timeTextView;
@@ -630,8 +689,15 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
             bottomRow.setGravity(Gravity.CENTER_VERTICAL);
             bubbleLayout.addView(bottomRow, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, Gravity.RIGHT, 0, 6, 0, 0));
 
+            commentsIconImageView = new ImageView(context);
+            bottomRow.addView(commentsIconImageView, LayoutHelper.createLinear(12, 12, Gravity.CENTER_VERTICAL));
+
+            commentsTextView = new TextView(context);
+            commentsTextView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
+            bottomRow.addView(commentsTextView, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER_VERTICAL, 3, 0, 0, 0));
+
             viewsIconImageView = new ImageView(context);
-            bottomRow.addView(viewsIconImageView, LayoutHelper.createLinear(12, 12, Gravity.CENTER_VERTICAL));
+            bottomRow.addView(viewsIconImageView, LayoutHelper.createLinear(12, 12, Gravity.CENTER_VERTICAL, 8, 0, 0, 0));
 
             viewsTextView = new TextView(context);
             viewsTextView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
@@ -667,12 +733,14 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
             nameTextView.setMaxWidth(textMaxWidth);
             messageTextView.setMaxWidth(textMaxWidth);
 
-            CharSequence text = null;
-            for (int i = 0; i < post.messages.size(); i++) {
-                final CharSequence caption = post.messages.get(i).messageText;
-                if (!TextUtils.isEmpty(caption)) {
-                    text = caption;
-                    break;
+            CharSequence text = post.caption;
+            if (TextUtils.isEmpty(text)) {
+                for (int i = 0; i < post.messages.size(); i++) {
+                    final CharSequence messageText = post.messages.get(i).messageText;
+                    if (!TextUtils.isEmpty(messageText)) {
+                        text = messageText;
+                        break;
+                    }
                 }
             }
             if (TextUtils.isEmpty(text) && (mainMessage.type == MessageObject.TYPE_STICKER || mainMessage.type == MessageObject.TYPE_ANIMATED_STICKER)) {
@@ -700,8 +768,21 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
             }
 
             int views = 0;
+            int replies = 0;
             for (int i = 0; i < post.messages.size(); i++) {
                 views = Math.max(views, post.messages.get(i).messageOwner.views);
+                replies = Math.max(replies, post.messages.get(i).getRepliesCount());
+            }
+            if (replies > 0 && Theme.chat_msgInRepliesDrawable != null) {
+                if (commentsIconImageView.getDrawable() == null) {
+                    commentsIconImageView.setImageDrawable(Theme.chat_msgInRepliesDrawable);
+                }
+                commentsIconImageView.setVisibility(View.VISIBLE);
+                commentsTextView.setVisibility(View.VISIBLE);
+                commentsTextView.setText(LocaleController.formatShortNumber(replies, null));
+            } else {
+                commentsIconImageView.setVisibility(View.GONE);
+                commentsTextView.setVisibility(View.GONE);
             }
             if (views > 0 && Theme.chat_msgInViewsDrawable != null) {
                 if (viewsIconImageView.getDrawable() == null) {
@@ -885,8 +966,23 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
             bubbleLayout.setBackground(Theme.createRoundRectDrawable(dp(15), Theme.getColor(Theme.key_chat_inBubble, resourcesProvider)));
             messageTextView.setTextColor(Theme.getColor(Theme.key_chat_messageTextIn, resourcesProvider));
             messageTextView.setHighlightColor(Theme.getColor(Theme.key_chat_linkSelectBackground, resourcesProvider));
+            commentsTextView.setTextColor(Theme.getColor(Theme.key_chat_inViews, resourcesProvider));
             viewsTextView.setTextColor(Theme.getColor(Theme.key_chat_inViews, resourcesProvider));
             timeTextView.setTextColor(Theme.getColor(Theme.key_chat_inTimeText, resourcesProvider));
+        }
+
+        public boolean isTapOnComments(float x, float y) {
+            if (commentsIconImageView.getVisibility() != View.VISIBLE) {
+                return false;
+            }
+            final Rect iconRect = new Rect();
+            commentsIconImageView.getHitRect(iconRect);
+            iconRect.offset(bubbleLayout.getLeft(), bubbleLayout.getTop());
+            final Rect textRect = new Rect();
+            commentsTextView.getHitRect(textRect);
+            textRect.offset(bubbleLayout.getLeft(), bubbleLayout.getTop());
+            iconRect.union(textRect);
+            return iconRect.contains((int) x, (int) y);
         }
 
         public int getMediaIndexAt(float x, float y) {
