@@ -4,7 +4,6 @@ import static org.telegram.messenger.AndroidUtilities.dp;
 import static org.telegram.messenger.LocaleController.getString;
 
 import android.content.Context;
-import android.graphics.Outline;
 import android.graphics.Rect;
 import android.os.Bundle;
 import android.text.TextUtils;
@@ -15,8 +14,8 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.ViewOutlineProvider;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -590,6 +589,7 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
         private final TextView messageTextView;
         private final FrameLayout mediaContainer;
         private final ArrayList<BackupImageView> mediaCells = new ArrayList<>();
+        private final ImageView viewsIconImageView;
         private final TextView viewsTextView;
         private final TextView timeTextView;
         private final Theme.ResourcesProvider resourcesProvider;
@@ -623,13 +623,6 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
             bubbleLayout.addView(messageTextView, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, Gravity.TOP | Gravity.LEFT, 0, 3, 0, 0));
 
             mediaContainer = new FrameLayout(context);
-            mediaContainer.setOutlineProvider(new ViewOutlineProvider() {
-                @Override
-                public void getOutline(View view, Outline outline) {
-                    outline.setRoundRect(0, 0, view.getMeasuredWidth(), view.getMeasuredHeight(), dp(8));
-                }
-            });
-            mediaContainer.setClipToOutline(true);
             bubbleLayout.addView(mediaContainer, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, Gravity.TOP | Gravity.LEFT, 0, 4, 0, 0));
 
             final LinearLayout bottomRow = new LinearLayout(context);
@@ -637,9 +630,12 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
             bottomRow.setGravity(Gravity.CENTER_VERTICAL);
             bubbleLayout.addView(bottomRow, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, Gravity.RIGHT, 0, 6, 0, 0));
 
+            viewsIconImageView = new ImageView(context);
+            bottomRow.addView(viewsIconImageView, LayoutHelper.createLinear(12, 12, Gravity.CENTER_VERTICAL));
+
             viewsTextView = new TextView(context);
             viewsTextView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
-            bottomRow.addView(viewsTextView, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER_VERTICAL, 0, 0, 0, 0));
+            bottomRow.addView(viewsTextView, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER_VERTICAL, 3, 0, 0, 0));
 
             timeTextView = new TextView(context);
             timeTextView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
@@ -666,8 +662,10 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
             timeTextView.setText(LocaleController.getInstance().getFormatterDay().format((long) mainMessage.messageOwner.date * 1000));
 
             final int innerMaxWidth = getBubbleMaxWidth() - dp(BUBBLE_PAD_DP * 2);
-            nameTextView.setMaxWidth(innerMaxWidth);
-            messageTextView.setMaxWidth(innerMaxWidth);
+            final int mediaWidth = updateMedia(post, innerMaxWidth);
+            final int textMaxWidth = mediaWidth > 0 ? Math.min(innerMaxWidth, mediaWidth) : innerMaxWidth;
+            nameTextView.setMaxWidth(textMaxWidth);
+            messageTextView.setMaxWidth(textMaxWidth);
 
             CharSequence text = null;
             for (int i = 0; i < post.messages.size(); i++) {
@@ -690,59 +688,135 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
                 messageTextView.setText(text);
             }
 
-            updateMedia(post, innerMaxWidth);
+            // in channels the caption goes below the media
+            if (mediaWidth > 0 && messageTextView.getVisibility() == View.VISIBLE) {
+                if (bubbleLayout.indexOfChild(messageTextView) < bubbleLayout.indexOfChild(mediaContainer)) {
+                    bubbleLayout.removeView(messageTextView);
+                    bubbleLayout.addView(messageTextView, bubbleLayout.indexOfChild(mediaContainer) + 1);
+                }
+            } else if (bubbleLayout.indexOfChild(messageTextView) > bubbleLayout.indexOfChild(mediaContainer)) {
+                bubbleLayout.removeView(messageTextView);
+                bubbleLayout.addView(messageTextView, bubbleLayout.indexOfChild(nameTextView) + 1);
+            }
 
             int views = 0;
             for (int i = 0; i < post.messages.size(); i++) {
                 views = Math.max(views, post.messages.get(i).messageOwner.views);
             }
-            if (views > 0) {
+            if (views > 0 && Theme.chat_msgInViewsDrawable != null) {
+                if (viewsIconImageView.getDrawable() == null) {
+                    viewsIconImageView.setImageDrawable(Theme.chat_msgInViewsDrawable);
+                }
+                viewsIconImageView.setVisibility(View.VISIBLE);
                 viewsTextView.setVisibility(View.VISIBLE);
                 viewsTextView.setText(LocaleController.formatShortNumber(views, null));
             } else {
+                viewsIconImageView.setVisibility(View.GONE);
                 viewsTextView.setVisibility(View.GONE);
             }
         }
 
-        private void updateMedia(FeedPost post, int innerMaxWidth) {
+        // returns the drawn media width (0 when no media), layout is the same as in ChatMessageCell
+        private int updateMedia(FeedPost post, int innerMaxWidth) {
             final int count = post.media.size();
             mediaContainer.setVisibility(count > 0 ? View.VISIBLE : View.GONE);
             if (count == 0) {
-                return;
+                return 0;
             }
-            final int innerWidth = Math.max(dp(80), innerMaxWidth);
-            final int gap = dp(2);
-            ensureMediaCells(count);
+            final int groupWidth = Math.max(dp(80), innerMaxWidth);
 
-            int containerHeight;
             if (count == 1) {
-                final int height = mediaAspectHeight(post.media.get(0), innerWidth, dp(80), dp(300));
-                layoutMediaCell(0, 0, 0, innerWidth, height, post.media.get(0));
-                containerHeight = height;
-            } else if (count == 2) {
-                final int height0 = mediaAspectHeight(post.media.get(0), innerWidth, dp(100), dp(240));
-                final int height1 = mediaAspectHeight(post.media.get(1), innerWidth, dp(100), dp(240));
-                layoutMediaCell(0, 0, 0, innerWidth, height0, post.media.get(0));
-                layoutMediaCell(1, 0, height0 + gap, innerWidth, height1, post.media.get(1));
-                containerHeight = height0 + gap + height1;
-            } else {
-                final int cellWidth = (innerWidth - gap) / 2;
-                final int cellHeight = mediaAspectHeight(post.media.get(0), cellWidth, dp(100), dp(140));
-                for (int i = 0; i < count; i++) {
-                    final int col = i % 2;
-                    final int row = i / 2;
-                    layoutMediaCell(i, col * (cellWidth + gap), row * (cellHeight + gap), cellWidth, cellHeight, post.media.get(i));
-                }
-                final int rows = (count + 1) / 2;
-                containerHeight = rows * (cellHeight + gap) - gap;
+                ensureMediaCells(1);
+                final int height = mediaAspectHeight(post.media.get(0), groupWidth, dp(80), dp(300));
+                layoutMediaCell(0, 0, 0, groupWidth, height, post.media.get(0), dp(8), dp(8), dp(8), dp(8));
+                setMediaContainerSize(groupWidth, height);
+                return groupWidth;
             }
 
-            final ViewGroup.LayoutParams params = mediaContainer.getLayoutParams();
-            if (params instanceof LinearLayout.LayoutParams) {
-                ((LinearLayout.LayoutParams) params).width = innerWidth;
-                params.height = containerHeight;
-                mediaContainer.setLayoutParams(params);
+            final MessageObject.GroupedMessages grouped = new MessageObject.GroupedMessages();
+            grouped.groupId = post.getMainMessage().getGroupId();
+            grouped.messages.addAll(post.media);
+            grouped.calculate();
+
+            final float maxHeight = Math.max(getMeasuredWidth() > 0 ? getMeasuredWidth() : AndroidUtilities.displaySize.x, AndroidUtilities.displaySize.y) * 0.5f;
+
+            final HashMap<Integer, Float> rowHeights = new HashMap<>();
+            for (int i = 0; i < post.media.size(); i++) {
+                final MessageObject.GroupedMessagePosition pos = grouped.getPosition(post.media.get(i));
+                if (pos == null || pos.minY != pos.maxY) {
+                    continue;
+                }
+                final Float prev = rowHeights.get((int) pos.minY);
+                if (prev == null || pos.ph > prev) {
+                    rowHeights.put((int) pos.minY, pos.ph);
+                }
             }
+
+            ensureMediaCells(count);
+            int maxRight = 0;
+            int maxBottom = 0;
+            for (int i = 0; i < post.media.size(); i++) {
+                final MessageObject messageObject = post.media.get(i);
+                final MessageObject.GroupedMessagePosition pos = grouped.getPosition(messageObject);
+                if (pos == null) {
+                    continue;
+                }
+                final int w = (int) Math.ceil(pos.pw / 1000.0f * groupWidth);
+                int h = 0;
+                if (pos.siblingHeights != null) {
+                    h = 0;
+                    for (int a = 0; a < pos.siblingHeights.length; a++) {
+                        h += (int) Math.ceil(maxHeight * pos.siblingHeights[a]);
+                    }
+                    h += (pos.maxY - pos.minY) * Math.round(dp(7));
+                } else {
+                    h = (int) Math.ceil(maxHeight * pos.ph);
+                }
+                final int x;
+                if (pos.leftSpanOffset != 0) {
+                    x = (int) Math.ceil(pos.leftSpanOffset / 1000.0f * groupWidth);
+                } else {
+                    int left = 0;
+                    for (int j = 0; j < post.media.size(); j++) {
+                        if (j == i) {
+                            continue;
+                        }
+                        final MessageObject.GroupedMessagePosition other = grouped.getPosition(post.media.get(j));
+                        if (other != null && other.minY <= pos.minY && pos.minY <= other.maxY && other.maxX < pos.minX) {
+                            left += other.pw;
+                        }
+                    }
+                    x = (int) Math.ceil(left / 1000.0f * groupWidth);
+                }
+                int y = 0;
+                for (int row = 0; row < pos.minY; row++) {
+                    final Float rowHeight = rowHeights.get(row);
+                    if (rowHeight != null) {
+                        y += (int) Math.ceil(maxHeight * rowHeight);
+                    }
+                }
+
+                final int minRad = dp(4);
+                final int rad = dp(8);
+                int tl = rad, tr = rad, br = rad, bl = rad;
+                if ((pos.flags & MessageObject.POSITION_FLAG_RIGHT) == 0) {
+                    tr = br = minRad;
+                }
+                if ((pos.flags & MessageObject.POSITION_FLAG_LEFT) == 0) {
+                    tl = bl = minRad;
+                }
+                if ((pos.flags & MessageObject.POSITION_FLAG_BOTTOM) == 0) {
+                    bl = br = minRad;
+                }
+                if ((pos.flags & MessageObject.POSITION_FLAG_TOP) == 0) {
+                    tl = tr = minRad;
+                }
+                layoutMediaCell(i, x, y, w, h, messageObject, tl, tr, br, bl);
+                maxRight = Math.max(maxRight, x + w);
+                maxBottom = Math.max(maxBottom, y + h);
+            }
+            setMediaContainerSize(maxRight, maxBottom);
+            return maxRight;
         }
 
         private void ensureMediaCells(int count) {
@@ -759,13 +833,23 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
             }
         }
 
-        private void layoutMediaCell(int index, int x, int y, int width, int height, MessageObject messageObject) {
+        private void layoutMediaCell(int index, int x, int y, int width, int height, MessageObject messageObject, int tl, int tr, int br, int bl) {
             final BackupImageView cell = mediaCells.get(index);
             final FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(width, height, Gravity.TOP | Gravity.LEFT);
             params.leftMargin = x;
             params.topMargin = y;
             cell.setLayoutParams(params);
+            cell.getImageReceiver().setRoundRadius(tl, tr, br, bl);
             setImage(cell, messageObject, width, height);
+        }
+
+        private void setMediaContainerSize(int width, int height) {
+            final ViewGroup.LayoutParams params = mediaContainer.getLayoutParams();
+            if (params instanceof LinearLayout.LayoutParams) {
+                ((LinearLayout.LayoutParams) params).width = width;
+                params.height = height;
+                mediaContainer.setLayoutParams(params);
+            }
         }
 
         private static void setImage(BackupImageView imageView, MessageObject messageObject, int width, int height) {
