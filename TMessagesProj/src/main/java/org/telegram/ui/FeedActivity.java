@@ -4,6 +4,7 @@ import static org.telegram.messenger.AndroidUtilities.dp;
 import static org.telegram.messenger.LocaleController.getString;
 
 import android.content.Context;
+import android.graphics.Outline;
 import android.graphics.Rect;
 import android.os.Bundle;
 import android.text.TextUtils;
@@ -14,6 +15,7 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewOutlineProvider;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -246,24 +248,48 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
     }
 
     private void rebuildMerged() {
-        mergedPosts.clear();
+        // group album members (same dialog + grouped_id) into a single post
+        final HashMap<String, FeedPost> albums = new HashMap<>();
+        final ArrayList<FeedPost> merged = new ArrayList<>();
         for (int i = 0; i < channelMessages.size(); i++) {
             final ArrayList<FeedPost> posts = channelMessages.valueAt(i);
-            if (posts != null) {
-                mergedPosts.addAll(posts);
+            if (posts == null) {
+                continue;
+            }
+            for (int j = 0; j < posts.size(); j++) {
+                final FeedPost post = posts.get(j);
+                final long groupedId = post.getMainMessage().messageOwner.grouped_id;
+                if (groupedId == 0) {
+                    merged.add(post);
+                } else {
+                    final String key = post.dialogId + ":" + groupedId;
+                    FeedPost album = albums.get(key);
+                    if (album == null) {
+                        album = new FeedPost(post.dialogId, post.chat, null);
+                        albums.put(key, album);
+                    }
+                    album.messages.add(post.getMainMessage());
+                }
             }
         }
-        Collections.sort(mergedPosts, (a, b) -> {
-            final int dateA = a.messageObject.messageOwner.date;
-            final int dateB = b.messageObject.messageOwner.date;
+        for (FeedPost album : albums.values()) {
+            Collections.sort(album.messages, (a, b) -> Integer.compare(a.getId(), b.getId()));
+            album.rebuildDerived();
+            merged.add(album);
+        }
+        Collections.sort(merged, (a, b) -> {
+            final int dateA = a.getMainMessage().messageOwner.date;
+            final int dateB = b.getMainMessage().messageOwner.date;
             if (dateA != dateB) {
                 return Integer.compare(dateB, dateA);
             }
-            return Integer.compare(b.messageObject.getId(), a.messageObject.getId());
+            return Integer.compare(b.sortId, a.sortId);
         });
-        for (int i = 0; i < mergedPosts.size(); i++) {
-            final FeedPost post = mergedPosts.get(i);
+        mergedPosts.clear();
+        for (int i = 0; i < merged.size(); i++) {
+            final FeedPost post = merged.get(i);
             post.chat = feedChannels.get(post.dialogId);
+            mergedPosts.add(post);
         }
         if (listView != null && listView.adapter != null) {
             listView.adapter.update(true);
@@ -309,7 +335,9 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
                     if (messageObject == null || messageObject.messageOwner == null || messageObject.messageOwner.action != null) {
                         continue;
                     }
-                    posts.add(new FeedPost(dialogId, chat, messageObject));
+                    final ArrayList<MessageObject> single = new ArrayList<>();
+                    single.add(messageObject);
+                    posts.add(new FeedPost(dialogId, chat, single));
                 }
             }
             channelMessages.put(dialogId, posts);
@@ -345,7 +373,7 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
         int lastDayKey = 0;
         for (int i = 0; i < mergedPosts.size(); i++) {
             final FeedPost post = mergedPosts.get(i);
-            final int date = post.messageObject.messageOwner.date;
+            final int date = post.getMainMessage().messageOwner.date;
             final int dayKey = dayKeyOf(date);
             if (dayKey != lastDayKey) {
                 lastDayKey = dayKey;
@@ -360,26 +388,27 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
             return;
         }
         final FeedPost post = (FeedPost) item.object;
-        if (view instanceof FeedPostCell && ((FeedPostCell) view).isTapOnMedia(x, y)) {
-            openPhotoViewer(post);
+        final int mediaIndex = view instanceof FeedPostCell ? ((FeedPostCell) view).getMediaIndexAt(x, y) : -1;
+        if (mediaIndex >= 0 && mediaIndex < post.media.size()) {
+            openPhotoViewer(post, mediaIndex);
             return;
         }
         openChat(post);
     }
 
-    private void openPhotoViewer(FeedPost post) {
+    private void openPhotoViewer(FeedPost post, int index) {
         if (getParentActivity() == null) {
             return;
         }
         final PhotoViewer photoViewer = PhotoViewer.getInstance();
         photoViewer.setParentActivity(getParentActivity());
-        photoViewer.openPhoto(post.messageObject, post.dialogId, 0, 0, new PhotoViewer.EmptyPhotoViewerProvider(), false);
+        photoViewer.openPhoto(post.media, index, post.dialogId, 0, 0, new PhotoViewer.EmptyPhotoViewerProvider());
     }
 
     private void openChat(FeedPost post) {
         Bundle args = new Bundle();
         args.putLong("dialog_id", post.dialogId);
-        args.putInt("message_id", post.messageObject.getId());
+        args.putInt("message_id", post.getMainMessage().getId());
         getNotificationCenter().postNotificationName(NotificationCenter.closeChats);
         presentFragment(new ChatActivity(args));
     }
@@ -442,13 +471,41 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
 
     private static class FeedPost {
         final long dialogId;
-        final MessageObject messageObject;
         TLRPC.Chat chat;
+        final ArrayList<MessageObject> messages = new ArrayList<>();
+        final ArrayList<MessageObject> media = new ArrayList<>();
+        int sortId;
 
-        FeedPost(long dialogId, TLRPC.Chat chat, MessageObject messageObject) {
+        FeedPost(long dialogId, TLRPC.Chat chat, ArrayList<MessageObject> messages) {
             this.dialogId = dialogId;
             this.chat = chat;
-            this.messageObject = messageObject;
+            if (messages != null) {
+                this.messages.addAll(messages);
+            }
+            rebuildDerived();
+        }
+
+        // called after album messages were collected
+        void rebuildDerived() {
+            media.clear();
+            int maxId = 0;
+            for (int i = 0; i < messages.size(); i++) {
+                final MessageObject messageObject = messages.get(i);
+                maxId = Math.max(maxId, messageObject.getId());
+                if (isMediaMessage(messageObject)) {
+                    media.add(messageObject);
+                }
+            }
+            sortId = maxId;
+        }
+
+        MessageObject getMainMessage() {
+            return messages.get(0);
+        }
+
+        static boolean isMediaMessage(MessageObject messageObject) {
+            return (messageObject.type == MessageObject.TYPE_PHOTO || messageObject.type == MessageObject.TYPE_VIDEO || messageObject.type == MessageObject.TYPE_GIF)
+                && messageObject.photoThumbs != null && !messageObject.photoThumbs.isEmpty();
         }
     }
 
@@ -531,7 +588,8 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
         private final LinearLayout bubbleLayout;
         private final TextView nameTextView;
         private final TextView messageTextView;
-        private final BackupImageView mediaImageView;
+        private final FrameLayout mediaContainer;
+        private final ArrayList<BackupImageView> mediaCells = new ArrayList<>();
         private final TextView viewsTextView;
         private final TextView timeTextView;
         private final Theme.ResourcesProvider resourcesProvider;
@@ -564,9 +622,15 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
             messageTextView.setTextIsSelectable(false);
             bubbleLayout.addView(messageTextView, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, Gravity.TOP | Gravity.LEFT, 0, 3, 0, 0));
 
-            mediaImageView = new BackupImageView(context);
-            mediaImageView.setRoundRadius(dp(8));
-            bubbleLayout.addView(mediaImageView, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, Gravity.TOP | Gravity.LEFT, 0, 4, 0, 0));
+            mediaContainer = new FrameLayout(context);
+            mediaContainer.setOutlineProvider(new ViewOutlineProvider() {
+                @Override
+                public void getOutline(View view, Outline outline) {
+                    outline.setRoundRect(0, 0, view.getMeasuredWidth(), view.getMeasuredHeight(), dp(8));
+                }
+            });
+            mediaContainer.setClipToOutline(true);
+            bubbleLayout.addView(mediaContainer, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, Gravity.TOP | Gravity.LEFT, 0, 4, 0, 0));
 
             final LinearLayout bottomRow = new LinearLayout(context);
             bottomRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -588,7 +652,7 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
         }
 
         public void set(FeedPost post) {
-            final MessageObject messageObject = post.messageObject;
+            final MessageObject mainMessage = post.getMainMessage();
             updateColors();
 
             if (post.chat != null) {
@@ -599,15 +663,22 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
             } else {
                 nameTextView.setVisibility(View.GONE);
             }
-            timeTextView.setText(LocaleController.getInstance().getFormatterDay().format((long) messageObject.messageOwner.date * 1000));
+            timeTextView.setText(LocaleController.getInstance().getFormatterDay().format((long) mainMessage.messageOwner.date * 1000));
 
             final int innerMaxWidth = getBubbleMaxWidth() - dp(BUBBLE_PAD_DP * 2);
             nameTextView.setMaxWidth(innerMaxWidth);
             messageTextView.setMaxWidth(innerMaxWidth);
 
-            CharSequence text = messageObject.messageText;
-            if (TextUtils.isEmpty(text) && (messageObject.type == MessageObject.TYPE_STICKER || messageObject.type == MessageObject.TYPE_ANIMATED_STICKER)) {
-                final String emoji = messageObject.getStickerEmoji();
+            CharSequence text = null;
+            for (int i = 0; i < post.messages.size(); i++) {
+                final CharSequence caption = post.messages.get(i).messageText;
+                if (!TextUtils.isEmpty(caption)) {
+                    text = caption;
+                    break;
+                }
+            }
+            if (TextUtils.isEmpty(text) && (mainMessage.type == MessageObject.TYPE_STICKER || mainMessage.type == MessageObject.TYPE_ANIMATED_STICKER)) {
+                final String emoji = mainMessage.getStickerEmoji();
                 if (!TextUtils.isEmpty(emoji)) {
                     text = emoji;
                 }
@@ -619,47 +690,111 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
                 messageTextView.setText(text);
             }
 
-            final boolean hasMedia = (messageObject.type == MessageObject.TYPE_PHOTO || messageObject.type == MessageObject.TYPE_VIDEO || messageObject.type == MessageObject.TYPE_GIF)
-                && messageObject.photoThumbs != null && !messageObject.photoThumbs.isEmpty();
-            mediaImageView.setVisibility(hasMedia ? View.VISIBLE : View.GONE);
-            if (hasMedia) {
-                final TLRPC.PhotoSize thumbSize = FileLoader.getClosestPhotoSizeWithSize(messageObject.photoThumbs, 50);
-                final TLRPC.PhotoSize photoSize = FileLoader.getClosestPhotoSizeWithSize(messageObject.photoThumbs, dp(560), false, thumbSize, false);
-                final TLRPC.PhotoSize smallThumb = photoSize == thumbSize ? null : thumbSize;
-                final String imageFilter = "560_360";
-                mediaImageView.setImage(
-                    ImageLocation.getForObject(photoSize, messageObject.photoThumbsObject),
-                    imageFilter,
-                    smallThumb != null ? ImageLocation.getForObject(smallThumb, messageObject.photoThumbsObject) : null,
-                    imageFilter + "_b",
-                    messageObject.strippedThumb,
-                    null,
-                    null,
-                    photoSize != null ? photoSize.size : 0,
-                    messageObject.photoThumbsObject
-                );
+            updateMedia(post, innerMaxWidth);
 
-                final int mediaWidth = Math.max(dp(80), innerMaxWidth);
-                int mediaHeight = dp(210);
-                if (photoSize != null && photoSize.w > 0 && photoSize.h > 0) {
-                    mediaHeight = (int) ((long) mediaWidth * photoSize.h / photoSize.w);
-                    mediaHeight = Math.max(dp(80), Math.min(dp(300), mediaHeight));
-                }
-                final ViewGroup.LayoutParams mediaParams = mediaImageView.getLayoutParams();
-                if (mediaParams instanceof LinearLayout.LayoutParams) {
-                    ((LinearLayout.LayoutParams) mediaParams).width = mediaWidth;
-                    mediaParams.height = mediaHeight;
-                    mediaImageView.setLayoutParams(mediaParams);
-                }
+            int views = 0;
+            for (int i = 0; i < post.messages.size(); i++) {
+                views = Math.max(views, post.messages.get(i).messageOwner.views);
             }
-
-            final int views = messageObject.messageOwner.views;
             if (views > 0) {
                 viewsTextView.setVisibility(View.VISIBLE);
                 viewsTextView.setText(LocaleController.formatShortNumber(views, null));
             } else {
                 viewsTextView.setVisibility(View.GONE);
             }
+        }
+
+        private void updateMedia(FeedPost post, int innerMaxWidth) {
+            final int count = post.media.size();
+            mediaContainer.setVisibility(count > 0 ? View.VISIBLE : View.GONE);
+            if (count == 0) {
+                return;
+            }
+            final int innerWidth = Math.max(dp(80), innerMaxWidth);
+            final int gap = dp(2);
+            ensureMediaCells(count);
+
+            int containerHeight;
+            if (count == 1) {
+                final int height = mediaAspectHeight(post.media.get(0), innerWidth, dp(80), dp(300));
+                layoutMediaCell(0, 0, 0, innerWidth, height, post.media.get(0));
+                containerHeight = height;
+            } else if (count == 2) {
+                final int height0 = mediaAspectHeight(post.media.get(0), innerWidth, dp(100), dp(240));
+                final int height1 = mediaAspectHeight(post.media.get(1), innerWidth, dp(100), dp(240));
+                layoutMediaCell(0, 0, 0, innerWidth, height0, post.media.get(0));
+                layoutMediaCell(1, 0, height0 + gap, innerWidth, height1, post.media.get(1));
+                containerHeight = height0 + gap + height1;
+            } else {
+                final int cellWidth = (innerWidth - gap) / 2;
+                final int cellHeight = mediaAspectHeight(post.media.get(0), cellWidth, dp(100), dp(140));
+                for (int i = 0; i < count; i++) {
+                    final int col = i % 2;
+                    final int row = i / 2;
+                    layoutMediaCell(i, col * (cellWidth + gap), row * (cellHeight + gap), cellWidth, cellHeight, post.media.get(i));
+                }
+                final int rows = (count + 1) / 2;
+                containerHeight = rows * (cellHeight + gap) - gap;
+            }
+
+            final ViewGroup.LayoutParams params = mediaContainer.getLayoutParams();
+            if (params instanceof LinearLayout.LayoutParams) {
+                ((LinearLayout.LayoutParams) params).width = innerWidth;
+                params.height = containerHeight;
+                mediaContainer.setLayoutParams(params);
+            }
+        }
+
+        private void ensureMediaCells(int count) {
+            while (mediaCells.size() < count) {
+                final BackupImageView imageView = new BackupImageView(getContext());
+                imageView.setRoundRadius(0);
+                mediaContainer.addView(imageView);
+                mediaCells.add(imageView);
+            }
+            for (int i = mediaCells.size() - 1; i >= count; i--) {
+                final BackupImageView removed = mediaCells.remove(i);
+                removed.getImageReceiver().clearImage();
+                mediaContainer.removeView(removed);
+            }
+        }
+
+        private void layoutMediaCell(int index, int x, int y, int width, int height, MessageObject messageObject) {
+            final BackupImageView cell = mediaCells.get(index);
+            final FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(width, height, Gravity.TOP | Gravity.LEFT);
+            params.leftMargin = x;
+            params.topMargin = y;
+            cell.setLayoutParams(params);
+            setImage(cell, messageObject, width, height);
+        }
+
+        private static void setImage(BackupImageView imageView, MessageObject messageObject, int width, int height) {
+            final TLRPC.PhotoSize thumbSize = FileLoader.getClosestPhotoSizeWithSize(messageObject.photoThumbs, 50);
+            final TLRPC.PhotoSize photoSize = FileLoader.getClosestPhotoSizeWithSize(messageObject.photoThumbs, Math.max(width, height), false, thumbSize, false);
+            final TLRPC.PhotoSize smallThumb = photoSize == thumbSize ? null : thumbSize;
+            final String imageFilter = width + "_" + height;
+            imageView.setImage(
+                ImageLocation.getForObject(photoSize, messageObject.photoThumbsObject),
+                imageFilter,
+                smallThumb != null ? ImageLocation.getForObject(smallThumb, messageObject.photoThumbsObject) : null,
+                imageFilter + "_b",
+                messageObject.strippedThumb,
+                null,
+                null,
+                photoSize != null ? photoSize.size : 0,
+                messageObject.photoThumbsObject
+            );
+        }
+
+        private static int mediaAspectHeight(MessageObject messageObject, int width, int minHeight, int maxHeight) {
+            final TLRPC.PhotoSize photoSize = FileLoader.getClosestPhotoSizeWithSize(messageObject.photoThumbs, 800);
+            int height;
+            if (photoSize != null && photoSize.w > 0 && photoSize.h > 0) {
+                height = (int) ((long) width * photoSize.h / photoSize.w);
+            } else {
+                height = width * 3 / 4;
+            }
+            return Math.max(minHeight, Math.min(maxHeight, height));
         }
 
         private void updateColors() {
@@ -670,14 +805,25 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
             timeTextView.setTextColor(Theme.getColor(Theme.key_chat_inTimeText, resourcesProvider));
         }
 
-        public boolean isTapOnMedia(float x, float y) {
-            if (mediaImageView.getVisibility() != View.VISIBLE) {
-                return false;
+        public int getMediaIndexAt(float x, float y) {
+            if (mediaContainer.getVisibility() != View.VISIBLE) {
+                return -1;
             }
             final Rect rect = new Rect();
-            mediaImageView.getHitRect(rect);
+            mediaContainer.getHitRect(rect);
             rect.offset(bubbleLayout.getLeft(), bubbleLayout.getTop());
-            return rect.contains((int) x, (int) y);
+            if (!rect.contains((int) x, (int) y)) {
+                return -1;
+            }
+            final float localX = x - rect.left;
+            final float localY = y - rect.top;
+            for (int i = 0; i < mediaCells.size(); i++) {
+                final View cell = mediaCells.get(i);
+                if (localX >= cell.getLeft() && localX <= cell.getRight() && localY >= cell.getTop() && localY <= cell.getBottom()) {
+                    return i;
+                }
+            }
+            return -1;
         }
 
         public static class Factory extends UItem.UItemFactory<FeedPostCell> {
