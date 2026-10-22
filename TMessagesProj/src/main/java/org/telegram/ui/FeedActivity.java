@@ -11,9 +11,11 @@ import android.text.style.URLSpan;
 import android.util.LongSparseArray;
 import android.util.TypedValue;
 import android.graphics.Canvas;
+import android.graphics.Color;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
+import android.widget.EditText;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -34,12 +36,17 @@ import org.telegram.messenger.R;
 import org.telegram.messenger.browser.Browser;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.ui.ActionBar.ActionBar;
+import org.telegram.ui.ActionBar.ActionBarMenuItem;
 import org.telegram.ui.ActionBar.BackDrawable;
 import org.telegram.ui.ActionBar.BaseFragment;
 import org.telegram.ui.ActionBar.Theme;
 import org.telegram.ui.ActionBar.ThemeDescription;
 import org.telegram.ui.Cells.ChatMessageCell;
 import org.telegram.ui.Components.AvatarDrawable;
+import org.telegram.ui.Components.ChatAvatarContainer;
+import org.telegram.ui.Components.blur3.BlurredBackgroundDrawableViewFactory;
+import org.telegram.ui.Components.blur3.drawable.color.impl.BlurredBackgroundProviderImpl;
+import org.telegram.ui.Components.blur3.source.BlurredBackgroundSourceColor;
 import org.telegram.ui.Components.BackupImageView;
 import org.telegram.ui.Components.EmptyTextProgressView;
 import org.telegram.ui.Components.FlickerLoadingView;
@@ -138,6 +145,10 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
         }
     };
 
+    private ChatAvatarContainer avatarContainer;
+    private ActionBarMenuItem searchItem;
+    private String searchQuery = "";
+
     private boolean loading = true;
     private long lastFeedLoadTime;
     private boolean dialogsReloadScheduled;
@@ -169,11 +180,53 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
 
     @Override
     public View createView(Context context) {
-        actionBar.setAllowOverlayTitle(true);
-        actionBar.setTitle(getString(R.string.MainTabsFeed));
-        if (!hasMainTabs) {
-            actionBar.setBackButtonDrawable(new BackDrawable(false));
-        }
+        actionBar.setAllowOverlayTitle(false);
+        actionBar.setAddToContainer(false);
+        actionBar.setCastShadows(false);
+        actionBar.setBackgroundColor(Color.TRANSPARENT);
+        actionBar.setBackground(null);
+        actionBar.setBackButtonDrawable(null);
+
+        actionBar.createMenu();
+        final BlurredBackgroundSourceColor glassSource = new BlurredBackgroundSourceColor();
+        glassSource.setColor(getThemedColor(Theme.key_windowBackgroundWhite));
+        actionBar.setupGlass(new BlurredBackgroundDrawableViewFactory(glassSource), BlurredBackgroundProviderImpl.topPanelChatActivity(getResourceProvider()));
+
+        avatarContainer = new ChatAvatarContainer(context, this, false);
+        avatarContainer.setGlassMode();
+        avatarContainer.setClipChildren(false);
+        avatarContainer.setTitle(getString(R.string.MainTabsFeed));
+        final AvatarDrawable feedAvatarDrawable = new AvatarDrawable();
+        feedAvatarDrawable.setAvatarType(AvatarDrawable.AVATAR_TYPE_FILTER_CHANNELS);
+        feedAvatarDrawable.setScaleSize(.8f);
+        avatarContainer.getAvatarImageView().setImage(null, null, feedAvatarDrawable);
+        updateHeaderSubtitle();
+        actionBar.addView(avatarContainer, 0, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.MATCH_PARENT, Gravity.TOP | Gravity.LEFT, 0, 0, 52, 0));
+
+        searchItem = actionBar.createMenu().addItem(1, R.drawable.outline_header_search);
+        searchItem.setIsSearchField(true);
+        searchItem.setSearchPaddingStart(12);
+        actionBar.setFixedMenuOffset(-dp(5));
+        searchItem.setSearchFieldHint(getString(R.string.Search));
+        searchItem.setActionBarMenuItemSearchListener(new ActionBarMenuItem.ActionBarMenuItemSearchListener() {
+            @Override
+            public void onSearchExpand() {
+                avatarContainer.setVisibility(View.GONE);
+                actionBar.setBackButtonDrawable(new BackDrawable(false));
+            }
+
+            @Override
+            public void onSearchCollapse() {
+                avatarContainer.setVisibility(View.VISIBLE);
+                actionBar.setBackButtonDrawable(null);
+                setSearchQuery("");
+            }
+
+            @Override
+            public void onTextChanged(EditText editText) {
+                setSearchQuery(editText.getText().toString());
+            }
+        });
 
         flickerLoadingView = new FlickerLoadingView(context);
         flickerLoadingView.setViewType(FlickerLoadingView.DIALOG_CELL_TYPE);
@@ -190,6 +243,16 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
 
         contentView = new SizeNotifierFrameLayout(context) {
             @Override
+            protected boolean isActionBarVisible() {
+                return false;
+            }
+
+            @Override
+            protected boolean isStatusBarVisible() {
+                return false;
+            }
+
+            @Override
             protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
                 measureChildWithMargins(actionBar, widthMeasureSpec, 0, heightMeasureSpec, 0);
                 if (emptyView.getLayoutParams() instanceof ViewGroup.MarginLayoutParams) {
@@ -201,6 +264,7 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
         };
         contentView.addView(emptyView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
         contentView.addView(listView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
+        contentView.addView(actionBar);
 
         fragmentView = contentView;
         updateBackground();
@@ -209,6 +273,50 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
         updateEmptyState();
 
         return fragmentView;
+    }
+
+    @Override
+    public boolean onBackPressed(boolean invoked) {
+        if (actionBar != null && actionBar.isSearchFieldVisible()) {
+            if (invoked) {
+                actionBar.closeSearchField();
+            }
+            return false;
+        }
+        return super.onBackPressed(invoked);
+    }
+
+    private void setSearchQuery(String query) {
+        final String normalized = query == null ? "" : query.trim().toLowerCase();
+        if (normalized.equals(searchQuery)) {
+            return;
+        }
+        searchQuery = normalized;
+        if (listView != null && listView.adapter != null) {
+            listView.adapter.update(true);
+        }
+    }
+
+    private boolean matchesSearch(FeedPost post) {
+        if (searchQuery.isEmpty()) {
+            return true;
+        }
+        if (post.chat != null && post.chat.title != null && post.chat.title.toLowerCase().contains(searchQuery)) {
+            return true;
+        }
+        for (int i = 0; i < post.messages.size(); i++) {
+            final String text = post.messages.get(i).messageOwner.message;
+            if (text != null && text.toLowerCase().contains(searchQuery)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void updateHeaderSubtitle() {
+        if (avatarContainer != null) {
+            avatarContainer.setSubtitle(LocaleController.formatPluralString("Channels", feedChannels.size()));
+        }
     }
 
     private void updateBackground() {
@@ -293,6 +401,7 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
         }
         feedChannels.keySet().retainAll(channels.keySet());
         feedChannels.putAll(channels);
+        updateHeaderSubtitle();
         for (int i = channelMessages.size() - 1; i >= 0; i--) {
             if (!channels.containsKey(channelMessages.keyAt(i))) {
                 channelMessages.removeAt(i);
@@ -447,6 +556,9 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
         int lastDayKey = 0;
         for (int i = 0; i < mergedPosts.size(); i++) {
             final FeedPost post = mergedPosts.get(i);
+            if (!matchesSearch(post)) {
+                continue;
+            }
             final int date = post.getMainMessage().messageOwner.date;
             final int dayKey = dayKeyOf(date);
             if (dayKey != lastDayKey) {

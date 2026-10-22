@@ -203,6 +203,15 @@ public class ActionBar extends FrameLayout implements FactorAnimator.Target, The
         glassOnlyBack = true;
     }
 
+    private Integer fixedMenuOffset;
+
+    public void setFixedMenuOffset(int offset) {
+        fixedMenuOffset = offset;
+        if (menu != null) {
+            menu.setTranslationX(offset);
+        }
+    }
+
     public void setChatAvatarContainer(ChatAvatarContainer chatAvatarContainer) {
         this.chatAvatarContainer = chatAvatarContainer;
     }
@@ -1216,7 +1225,7 @@ public class ActionBar extends FrameLayout implements FactorAnimator.Target, The
             }
 
             if (glassMode && menu != null) {
-                menu.setTranslationX(-lerp((float) dp(10), dp(5), searchFieldVisibleAlpha));
+                menu.setTranslationX(fixedMenuOffset != null ? fixedMenuOffset : -lerp((float) dp(10), dp(5), searchFieldVisibleAlpha));
             }
             if (backgroundUpdateListener != null) {
                 backgroundUpdateListener.run();
