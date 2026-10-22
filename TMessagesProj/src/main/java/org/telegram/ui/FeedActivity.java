@@ -10,6 +10,7 @@ import android.text.style.CharacterStyle;
 import android.text.style.URLSpan;
 import android.util.LongSparseArray;
 import android.util.TypedValue;
+import android.graphics.Canvas;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -25,6 +26,7 @@ import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ChatObject;
 import org.telegram.messenger.DialogObject;
 import org.telegram.messenger.LocaleController;
+import org.telegram.messenger.ImageReceiver;
 import org.telegram.messenger.MessageObject;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.NotificationCenter;
@@ -533,7 +535,7 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
             return;
         }
         Bundle args = new Bundle();
-        args.putLong("dialog_id", -chat.id);
+        args.putLong("chat_id", chat.id);
         if (messageId != 0) {
             args.putInt("message_id", messageId);
         }
@@ -745,9 +747,59 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
 
         private FeedMessage feedMessage;
 
+        private boolean headerPressed;
+
         public FeedMessageCell(Context context, int currentAccount, Theme.ResourcesProvider resourcesProvider) {
             super(context, currentAccount, false, null, resourcesProvider);
             setLayoutParams(new RecyclerView.LayoutParams(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
+        }
+
+        private boolean isHeaderHit(float x, float y) {
+            if (feedMessage == null) {
+                return false;
+            }
+            return isAvatarVisible && getAvatarImage().isInsideImage(x, y);
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            final MessageObject.GroupedMessagePosition position = getCurrentPosition();
+            if (position != null && (position.minX == 0 && position.minY == 0) && hasNameLayout()) {
+                drawNamesLayout(canvas, 1f);
+            }
+            if (isAvatarVisible && getMessageObject() != null && (position == null || position.last)) {
+                final ImageReceiver avatar = getAvatarImage();
+                avatar.setImageY(getPaddingTop() + getLayoutHeight() - dp(44));
+                avatar.setVisible(true, false);
+                avatar.setAlpha(1f);
+                avatar.draw(canvas);
+            }
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            final int action = event.getAction();
+            if (action == MotionEvent.ACTION_DOWN) {
+                headerPressed = isHeaderHit(event.getX(), event.getY());
+                if (headerPressed) {
+                    return true;
+                }
+            } else if (headerPressed) {
+                if (action == MotionEvent.ACTION_UP) {
+                    headerPressed = false;
+                    if (isHeaderHit(event.getX(), event.getY())) {
+                        playSoundEffect(android.view.SoundEffectConstants.CLICK);
+                        feedMessage.delegate.didPressChannelAvatar(this, feedMessage.post.chat, 0, event.getX(), event.getY(), false);
+                    }
+                    return true;
+                } else if (action == MotionEvent.ACTION_CANCEL) {
+                    headerPressed = false;
+                    return true;
+                }
+                return true;
+            }
+            return super.onTouchEvent(event);
         }
 
         public static class Factory extends UItem.UItemFactory<FeedMessageCell> {
@@ -767,6 +819,7 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
                 cell.feedMessage = feedMessage;
                 cell.isChat = true;
                 cell.forceChannelName = true;
+                feedMessage.message.forceAvatar = true;
                 cell.hasDiscussion = feedMessage.post.hasDiscussion;
                 cell.setDelegate(feedMessage.delegate);
                 cell.setMessageObject(feedMessage.message, feedMessage.post.group, feedMessage.bottomNear, feedMessage.topNear, false);

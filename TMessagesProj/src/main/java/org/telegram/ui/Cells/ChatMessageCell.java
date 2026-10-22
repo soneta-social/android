@@ -19736,6 +19736,10 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
 
     public boolean forceChannelName;
 
+    public boolean isInsideName(float x, float y) {
+        return drawNameLayout && nameLayout != null && nameLayoutSelector != null && nameLayoutSelector.getBounds().contains((int) x, (int) y);
+    }
+
     protected boolean isNeedAuthorName() {
         if (forceChannelName && currentMessageObject.messageOwner != null && currentMessageObject.messageOwner.post && (currentPosition == null || (currentPosition.flags & MessageObject.POSITION_FLAG_TOP) != 0)) {
             return true;
