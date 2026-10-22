@@ -101,6 +101,11 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
         }
 
         @Override
+        public void didPressUserAvatar(ChatMessageCell cell, TLRPC.User user, float touchX, float touchY, boolean asForward) {
+            openChannel(feedMessageOf(cell).post.chat, 0);
+        }
+
+        @Override
         public void didPressReplyMessage(ChatMessageCell cell, int id, float x, float y, boolean longpress) {
             openChannel(feedMessageOf(cell).post.chat, id);
         }
@@ -761,6 +766,7 @@ public class FeedActivity extends BaseFragment implements NotificationCenter.Not
                 final FeedMessage feedMessage = (FeedMessage) item.object;
                 cell.feedMessage = feedMessage;
                 cell.isChat = true;
+                cell.forceChannelName = true;
                 cell.hasDiscussion = feedMessage.post.hasDiscussion;
                 cell.setDelegate(feedMessage.delegate);
                 cell.setMessageObject(feedMessage.message, feedMessage.post.group, feedMessage.bottomNear, feedMessage.topNear, false);

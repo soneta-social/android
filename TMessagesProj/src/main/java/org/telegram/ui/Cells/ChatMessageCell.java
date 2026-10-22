@@ -19734,7 +19734,12 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
         return name;
     }
 
+    public boolean forceChannelName;
+
     protected boolean isNeedAuthorName() {
+        if (forceChannelName && currentMessageObject.messageOwner != null && currentMessageObject.messageOwner.post && (currentPosition == null || (currentPosition.flags & MessageObject.POSITION_FLAG_TOP) != 0)) {
+            return true;
+        }
         if (currentMessageObject.forceAvatar || currentMessageObject.getDialogId() == UserObject.VERIFY && currentMessageObject.messageOwner != null && currentMessageObject.messageOwner.fwd_from != null) {
             return true;
         }
